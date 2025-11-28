@@ -29,7 +29,7 @@ Built using [`html-template-card`](https://github.com/iansimard/html-template-ca
 
 2. **Custom cards / addons**
 
-   - [`html-template-card`](https://github.com/iansimard/html-template-card)
+   - https://github.com/PiotrMachowski/Home-Assistant-Lovelace-HTML-Jinja2-Template-card (Html Template Card)
    - [`card-mod`](https://github.com/thomasloven/lovelace-card-mod) (for styling)
 
 3. **A defined `zone.home`**
