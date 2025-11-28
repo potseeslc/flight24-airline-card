@@ -1,259 +1,613 @@
-readme.md
+# Flight24 Airline Card
 
-# 🛫 Flight24 Airline Card
+A custom [Home Assistant](https://www.home-assistant.io/) card that shows the **closest flight near your home** or the **most tracked flight on Flightradar24**, with airline logo, route, altitude, speed, and aircraft info.
 
-A custom Home Assistant dashboard card that displays real-time flight information using the Flightradar24 integration.
-The card shows either:
-
-* The **closest aircraft above 10,000 ft** near your home, or
-* The **most tracked flight worldwide**
-
-It includes airline logos, callsign, airline name, route, altitude, and ground speed.
-All assets are local, and no JavaScript or HACS repository is required.
+Built using [`html-template-card`](https://github.com/iansimard/html-template-card) and the [Flightradar24 Home Assistant integration](https://github.com/AlexxIT/FlightRadar24).
 
 ---
 
-## ✈️ Features
+## Features
 
-* Displays nearest high-altitude aircraft or worldwide most-tracked flight
-* Shows airline logo, callsign, flight number, and origin/destination
-* Detects private aircraft using N-number logic
-* Works in standard dashboards and kiosk/fullscreen displays
-* Fully local asset loading (PNG/SVG logos)
-* Clean, responsive UI
-
----
-
-## 📦 Required Components
-
-### 1. **Flightradar24 Integration**
-
-This card depends on the Flightradar24 integration by **Alexandr Erohin**:
-
-🔗 [https://github.com/AlexandrErohin/home-assistant-flightradar24](https://github.com/AlexandrErohin/home-assistant-flightradar24)
-
-This integration must provide the following sensors:
-
-* `sensor.flightradar24_current_in_area`
-* `sensor.flightradar24_most_tracked`
+- Shows **closest local flight above 10,000 ft** (distance from `zone.home`)
+- Falls back to **most tracked flight on Flightradar24**
+- Uses **ICAO code** from callsign/flight number to load airline logos
+- Handles:
+  - Unknown airlines gracefully (fallback logo + label)
+  - Private aircraft (US tail numbers like `N12345`) with a special icon
+- Two layouts:
+  - **Regular dashboard card**
+  - **Fullscreen kiosk card** (for a wall tablet / big display)
 
 ---
 
-### 2. **HTML Jinja2 Template Card**
+## Requirements
 
-Powered by Piotr Machowski’s HTML Jinja2 Template Card:
+1. **Flightradar24 integration** with at least these entities:
 
-🔗 [https://github.com/PiotrMachowski/Home-Assistant-Lovelace-HTML-Jinja2-Template-card](https://github.com/PiotrMachowski/Home-Assistant-Lovelace-HTML-Jinja2-Template-card)
+   - `sensor.flightradar24_current_in_area`
+   - `sensor.flightradar24_most_tracked`
 
-Install via HACS (custom repo) or manually.
-Card type:
+2. **Custom cards / addons**
 
-```yaml
-type: custom:html-template-card
-```
+   - [`html-template-card`](https://github.com/iansimard/html-template-card)
+   - [`card-mod`](https://github.com/thomasloven/lovelace-card-mod) (for styling)
+
+3. **A defined `zone.home`**
+   - Used by `distance('zone.home', (lat, lon))` to find the closest local flight.
 
 ---
 
-## 📁 Airline Logo Assets
+## Assets / Logos
 
-This card uses local airline logos stored in:
+Place your assets in `config/www/assets/` in Home Assistant:
 
-```
+```text
 /config/www/assets/
-```
+  flightaware_logos/
+    AAL.png
+    DAL.png
+    UAL.png
+    KLM.png
+    ...
+  fallback-airline/
+    icon.png
+  private-plane/
+    private-plane.png
+Airline logos are loaded from:
 
-You can download a complete collection of airline icons here:
+/local/assets/flightaware_logos/<ICAO>.png
 
-🔗 **Airline Logo Pack:**
-[https://github.com/anhthang/soaring-symbols/tree/main/assets](https://github.com/anhthang/soaring-symbols/tree/main/assets)
 
-After downloading, copy the airline folders into:
+Examples:
 
-```
-/config/www/assets/
-```
+Delta → DAL.png
 
-Example structure:
+United → UAL.png
 
-```
-www/
-└── assets/
-    ├── fallback-airline/
-    ├── private-plane/
-    ├── aeromexico/
-    ├── american-airlines/
-    ├── delta-air-lines/
-    ├── united-airlines/
-    ├── qatar-airways/
-    └── (additional airlines)
-```
+KLM → KLM.png
 
-Home Assistant exposes these as:
+Fallback logo:
 
-```
-/local/assets/<airline-folder>/icon.svg
-```
+/local/assets/fallback-airline/icon.png
 
-PNG or SVG logos are supported.
 
----
+Private plane logo:
 
-## 📋 Dashboard Card (Standard Version)
+/local/assets/private-plane/private-plane.png
 
-Add a **Manual card** to your dashboard and paste:
 
-```yaml
+💡 The card derives the ICAO prefix from the callsign first, then the flight number (first 3 characters, uppercased).
+
+Regular Dashboard Card
+
+Use this on your normal Lovelace dashboard.
+
 type: custom:html-template-card
 card_mod:
   style: |
     ha-card {
       background: #020617;
-      padding: 16px 20px;
       border-radius: 16px;
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+      padding: 20px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.25);
     }
+title: ""
 ignore_line_breaks: true
 entities:
   - sensor.flightradar24_current_in_area
   - sensor.flightradar24_most_tracked
-content: |
+content: >
+  {# --- Asset paths --- #}
   {% set fallback_icon = '/local/assets/fallback-airline/icon.png' %}
   {% set private_icon  = '/local/assets/private-plane/private-plane.png' %}
 
+  {# --- Get flight lists --- #}
   {% set local = state_attr('sensor.flightradar24_current_in_area', 'flights') or [] %}
-  {% set local_filtered = local | selectattr('altitude', '>', 10000) | list %}
+  {% set most  = state_attr('sensor.flightradar24_most_tracked', 'flights') or [] %}
 
-  {% if local_filtered | length > 0 %}
+  {# --- Pick closest local flight above 10,000 ft --- #}
+  {% set ns = namespace(best=None, best_dist=999999999) %}
+  {% for fl in local %}
+    {% if fl is mapping
+          and 'latitude' in fl and 'longitude' in fl
+          and 'altitude' in fl and (fl['altitude'] or 0) > 10000 %}
+      {% set d = distance('zone.home', (fl['latitude'], fl['longitude'])) %}
+      {% if d is number and d < ns.best_dist %}
+        {% set ns.best = fl %}
+        {% set ns.best_dist = d %}
+      {% endif %}
+    {% endif %}
+  {% endfor %}
+
+  {% if ns.best %}
     {% set mode = 'local' %}
-    {% set f = local_filtered | sort(attribute='distance') | first %}
+    {% set f = ns.best %}
+    {% set dist_km = (ns.best_dist / 1000) | round(1) %}
   {% else %}
     {% set mode = 'most' %}
-    {% set most = state_attr('sensor.flightradar24_most_tracked', 'flights') or [] %}
-    {% set f = most[0] if most | length > 0 else None %}
+    {% set f = most[0] if most|length > 0 else None %}
   {% endif %}
 
   <div style="
     width:100%;
     display:flex;
-    flex-direction:column;
-    gap:12px;
+    align-items:center;
+    justify-content:center;
     font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
     color:#e5e7eb;
   ">
 
   {% if not f %}
-    <div style="font-size:16px;opacity:0.85;">No flights available ✈️</div>
+    <div style="font-size:16px;opacity:0.85;">
+      No flights available ✈️
+    </div>
   {% else %}
 
-    {% set fn        = (f.flight_number or '') | string %}
-    {% set cs        = (f.callsign or '') | string %}
-    {% set airline   = (f.airline_short or 'Unknown') | string %}
-    {% set airline_l = airline | lower %}
-    {% set origin    = f.airport_origin_city or 'Unknown' %}
-    {% set dest      = f.airport_destination_city or 'Unknown' %}
-    {% set alt       = f.altitude or 0 %}
-    {% set gs        = f.ground_speed or 0 %}
+    {# --- Extract values safely --- #}
+    {% set fn       = (f.get('flight_number','')       | string) %}
+    {% set cs       = (f.get('callsign','')            | string) %}
+    {% set airline  = (f.get('airline_short','Unknown')| string) %}
+    {% set airline_l= airline | lower %}
+    {% set origin   = f.get('airport_origin_city','Unknown') %}
+    {% set dest     = f.get('airport_destination_city','Unknown') %}
+    {% set alt      = f.get('altitude', 0) or 0 %}
+    {% set gs       = f.get('ground_speed', 0) or 0 %}
+    {% set aircraft = f.get('aircraft_type')
+                       or f.get('aircraft_model')
+                       or f.get('aircraft_code')
+                       or 'Unknown' %}
 
+    {# --- Header text --- #}
     {% if mode == 'local' %}
-      {% set dist     = (f.distance | float | round(1)) %}
-      {% set header   = 'Closest flight • ' ~ dist ~ ' km from home' %}
+      {% set header   = 'Closest flight • ' ~ dist_km ~ ' km from home' %}
       {% set sublabel = 'Nearby flight' %}
     {% else %}
       {% set header   = 'Most tracked flight on Flightradar24' %}
       {% set sublabel = 'Most tracked flight' %}
     {% endif %}
 
+    {# --- ICAO logo selection --- #}
     {% set logo_url = fallback_icon %}
-    {% if 'unknown' in airline_l %}
-      {% set airline_label = sublabel %}
-    {% else %}
-      {% set airline_label = airline %}
+    {% set icao = '' %}
+    {% if cs|length >= 3 %}
+      {% set icao = cs[:3] | upper %}
+    {% elif fn|length >= 3 %}
+      {% set icao = fn[:3] | upper %}
+    {% endif %}
+    {% if icao %}
+      {% set logo_url = '/local/assets/flightaware_logos/' ~ icao ~ '.png' %}
     {% endif %}
 
+    {# --- Label under logo (with private/unknown handling) --- #}
     {% if fn.startswith('N') or cs.startswith('N') %}
       {% set logo_url = private_icon %}
       {% set airline_label = 'Private aircraft' %}
+    {% else %}
+      {% if 'unknown' in airline_l %}
+        {% set airline_label = icao if icao else sublabel %}
+      {% else %}
+        {% set airline_label = airline %}
+      {% endif %}
     {% endif %}
 
     <div style="
-      display:grid;
-      grid-template-columns:minmax(0, 1.5fr) auto;
-      gap:16px;
-      align-items:center;
+      display:flex;
+      flex-direction:column;
+      width:100%;
+      padding:8px;
+      max-width:1000px;
     ">
 
-      <div style="display:flex;flex-direction:column;gap:6px;">
-        <div style="font-size:11px;opacity:0.7;letter-spacing:0.15em;text-transform:uppercase;">
-          {{ header }}
-        </div>
+      <div style="
+        width:100%;
+        display:grid;
+        grid-template-columns:1fr auto;
+        gap:16px;
+        align-items:center;
+      ">
 
-        <div style="font-size:26px;font-weight:600;">
-          {{ fn if fn | length > 0 else cs }}
-        </div>
-
-        <div style="font-size:15px;opacity:0.8;">
-          {{ cs }}
-        </div>
-
-        <div style="font-size:17px;opacity:0.9;">
-          {{ origin }} → {{ dest }}
-        </div>
-
-        <div style="margin-top:8px;display:flex;gap:24px;font-size:13px;">
-          <div>
-            <div style="font-size:10px;opacity:0.6;text-transform:uppercase;letter-spacing:0.15em;">Altitude</div>
-            <div style="font-size:20px;font-weight:600;">{{ alt | int }} ft</div>
+        <div style="display:flex;flex-direction:column;gap:6px;">
+          <div style="
+            font-size:11px;
+            opacity:0.7;
+            letter-spacing:0.15em;
+            text-transform:uppercase;
+          ">
+            {{ header }}
           </div>
-          <div>
-            <div style="font-size:10px;opacity:0.6;text-transform:uppercase;letter-spacing:0.15em;">Ground Speed</div>
-            <div style="font-size:20px;font-weight:600;">{{ gs | int }} kts</div>
+
+          <div style="
+            font-size:26px;
+            font-weight:600;
+          ">
+            {{ fn if fn|length > 0 else cs }}
+          </div>
+
+          <div style="
+            font-size:15px;
+            opacity:0.8;
+          ">
+            {{ cs }}
+          </div>
+
+          <div style="
+            font-size:17px;
+            opacity:0.9;
+            margin-top:2px;
+          ">
+            {{ origin }} → {{ dest }}
+          </div>
+
+          <div style="
+            margin-top:8px;
+            font-size:13px;
+            display:flex;
+            gap:24px;
+            flex-wrap:wrap;
+          ">
+
+            <div>
+              <div style="
+                font-size:10px;
+                opacity:0.6;
+                text-transform:uppercase;
+                letter-spacing:0.15em;
+              ">
+                Altitude
+              </div>
+              <div style="font-size:20px;font-weight:600;">
+                {{ alt|int }} ft
+              </div>
+            </div>
+
+            <div>
+              <div style="
+                font-size:10px;
+                opacity:0.6;
+                text-transform:uppercase;
+                letter-spacing:0.15em;
+              ">
+                Ground Speed
+              </div>
+              <div style="font-size:20px;font-weight:600;">
+                {{ gs|int }} kts
+              </div>
+            </div>
+
+            <div>
+              <div style="
+                font-size:10px;
+                opacity:0.6;
+                text-transform:uppercase;
+                letter-spacing:0.15em;
+              ">
+                Aircraft
+              </div>
+              <div style="font-size:20px;font-weight:600;">
+                {{ aircraft }}
+              </div>
+            </div>
+
           </div>
         </div>
-      </div>
 
-      <div style="text-align:right;">
-        <img
-          src="{{ logo_url }}"
-          style="width:90px;height:auto;filter:drop-shadow(0 0 2px #0008);"
-        />
-        <div style="
-          font-size:12px;
-          opacity:0.7;
-          text-transform:uppercase;
-          margin-top:4px;
-        ">
-          {{ airline_label }}
+        <div style="text-align:right;">
+          <div style="
+            width:90px;
+            height:90px;
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            overflow:hidden;
+          ">
+            <img src="{{ logo_url }}" style="
+              max-width:80%;
+              max-height:80%;
+              object-fit:contain;
+            " />
+          </div>
+
+          <div style="
+            font-size:12px;
+            opacity:0.7;
+            text-transform:uppercase;
+            margin-top:4px;
+            text-align:center;
+          ">
+            {{ airline_label }}
+          </div>
+
+          {% if mode == 'most' %}
+          <div style="
+            font-size:10px;
+            opacity:0.6;
+            text-transform:uppercase;
+            margin-top:3px;
+            text-align:center;
+            letter-spacing:0.15em;
+          ">
+            MOST TRACKED FLIGHT
+          </div>
+          {% endif %}
+
         </div>
-      </div>
 
+      </div>
     </div>
 
   {% endif %}
   </div>
-```
 
----
+Fullscreen Kiosk Card
 
-## 🖥️ Kiosk Version
+This version is meant for a dedicated tablet / wall screen with kiosk mode.
 
-A fullscreen version for wall-mounted tablets can be added as `cards/kiosk.yaml` using the same template logic with:
+type: custom:html-template-card
+card_mod:
+  style: |
+    ha-card {
+      background: #020617;
+      border-radius: 0;
+      padding: 0;
+      box-shadow: none;
+      height: 100vh;
+    }
+title: ""
+ignore_line_breaks: true
+entities:
+  - sensor.flightradar24_current_in_area
+  - sensor.flightradar24_most_tracked
+content: >
+  {# --- Asset paths --- #}
+  {% set fallback_icon = '/local/assets/fallback-airline/icon.png' %}
+  {% set private_icon  = '/local/assets/private-plane/private-plane.png' %}
 
-```
-min-height: 100vh;
-border-radius: 0;
-padding: 0;
-```
+  {# --- Get flight lists --- #}
+  {% set local = state_attr('sensor.flightradar24_current_in_area', 'flights') or [] %}
+  {% set most  = state_attr('sensor.flightradar24_most_tracked', 'flights') or [] %}
 
----
+  {# --- Pick closest local flight above 10,000 ft --- #}
+  {% set ns = namespace(best=None, best_dist=999999999) %}
+  {% for fl in local %}
+    {% if fl is mapping
+          and 'latitude' in fl and 'longitude' in fl
+          and 'altitude' in fl and (fl['altitude'] or 0) > 10000 %}
+      {% set d = distance('zone.home', (fl['latitude'], fl['longitude'])) %}
+      {% if d is number and d < ns.best_dist %}
+        {% set ns.best = fl %}
+        {% set ns.best_dist = d %}
+      {% endif %}
+    {% endif %}
+  {% endfor %}
 
-## 👥 Contributing
+  {% if ns.best %}
+    {% set mode = 'local' %}
+    {% set f = ns.best %}
+    {% set dist_km = (ns.best_dist / 1000) | round(1) %}
+  {% else %}
+    {% set mode = 'most' %}
+    {% set f = most[0] if most|length > 0 else None %}
+  {% endif %}
 
-Feel free to add more airlines, tweak layout, or create alternate versions.
-Pull requests and forks are welcome.
+  <div style="
+    min-height:100vh;
+    width:100%;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+    color:#e5e7eb;
+  ">
 
----
+  {% if not f %}
+    <div style="font-size:clamp(18px,3vw,28px);opacity:0.85;">
+      No flights available ✈️
+    </div>
+  {% else %}
 
-## 📜 License
+    {# --- Extract values safely --- #}
+    {% set fn       = (f.get('flight_number','')       | string) %}
+    {% set cs       = (f.get('callsign','')            | string) %}
+    {% set airline  = (f.get('airline_short','Unknown')| string) %}
+    {% set airline_l= airline | lower %}
+    {% set origin   = f.get('airport_origin_city','Unknown') %}
+    {% set dest     = f.get('airport_destination_city','Unknown') %}
+    {% set alt      = f.get('altitude', 0) or 0 %}
+    {% set gs       = f.get('ground_speed', 0) or 0 %}
+    {% set aircraft = f.get('aircraft_type')
+                       or f.get('aircraft_model')
+                       or f.get('aircraft_code')
+                       or 'Unknown' %}
 
-MIT License
-© 2025 Colter Wilson (Potseeslc)
+    {# --- Header text --- #}
+    {% if mode == 'local' %}
+      {% set header   = 'Closest flight • ' ~ dist_km ~ ' km from home' %}
+      {% set sublabel = 'Nearby flight' %}
+    {% else %}
+      {% set header   = 'Most tracked flight on Flightradar24' %}
+      {% set sublabel = 'Most tracked flight' %}
+    {% endif %}
+
+    {# --- ICAO logo selection --- #}
+    {% set logo_url = fallback_icon %}
+    {% set icao = '' %}
+    {% if cs|length >= 3 %}
+      {% set icao = cs[:3] | upper %}
+    {% elif fn|length >= 3 %}
+      {% set icao = fn[:3] | upper %}
+    {% endif %}
+    {% if icao %}
+      {% set logo_url = '/local/assets/flightaware_logos/' ~ icao ~ '.png' %}
+    {% endif %}
+
+    {# --- Label under logo --- #}
+    {% if fn.startswith('N') or cs.startswith('N') %}
+      {% set logo_url = private_icon %}
+      {% set airline_label = 'Private aircraft' %}
+    {% else %}
+      {% if 'unknown' in airline_l %}
+        {% set airline_label = icao if icao else sublabel %}
+      {% else %}
+        {% set airline_label = airline %}
+      {% endif %}
+    {% endif %}
+
+    <div style="
+      display:flex;
+      flex-direction:column;
+      align-items:center;
+      justify-content:center;
+      width:100%;
+      max-width:1100px;
+      padding:24px;
+    ">
+
+      <div style="
+        width:100%;
+        display:grid;
+        grid-template-columns:1fr auto;
+        gap:18px;
+        align-items:center;
+      ">
+
+        <div style="display:flex;flex-direction:column;gap:8px;">
+          <div style="
+            font-size:clamp(10px,1.4vw,14px);
+            opacity:0.7;
+            letter-spacing:0.15em;
+            text-transform:uppercase;
+          ">
+            {{ header }}
+          </div>
+
+          <div style="
+            font-size:clamp(28px,5vw,56px);
+            font-weight:600;
+          ">
+            {{ fn if fn|length > 0 else cs }}
+          </div>
+
+          <div style="
+            font-size:clamp(16px,2.5vw,28px);
+            opacity:0.8;
+          ">
+            {{ cs }}
+          </div>
+
+          <div style="
+            font-size:clamp(18px,3vw,32px);
+            opacity:0.9;
+            margin-top:2px;
+          ">
+            {{ origin }} → {{ dest }}
+          </div>
+
+          <div style="
+            margin-top:10px;
+            font-size:clamp(12px,1.6vw,16px);
+            display:flex;
+            gap:36px;
+            flex-wrap:wrap;
+          ">
+
+            <div>
+              <div style="
+                font-size:clamp(9px,1.2vw,12px);
+                opacity:0.6;
+                text-transform:uppercase;
+                letter-spacing:0.15em;
+              ">
+                Altitude
+              </div>
+              <div style="
+                font-size:clamp(20px,3vw,34px);
+                font-weight:600;
+              ">
+                {{ alt|int }} ft
+              </div>
+            </div>
+
+            <div>
+              <div style="
+                font-size:clamp(9px,1.2vw,12px);
+                opacity:0.6;
+                text-transform:uppercase;
+                letter-spacing:0.15em;
+              ">
+                Ground Speed
+              </div>
+              <div style="
+                font-size:clamp(20px,3vw,34px);
+                font-weight:600;
+              ">
+                {{ gs|int }} kts
+              </div>
+            </div>
+
+            <div>
+              <div style="
+                font-size:clamp(9px,1.2vw,12px);
+                opacity:0.6;
+                text-transform:uppercase;
+                letter-spacing:0.15em;
+              ">
+                Aircraft
+              </div>
+              <div style="
+                font-size:clamp(20px,3vw,28px);
+                font-weight:600;
+              ">
+                {{ aircraft }}
+              </div>
+            </div>
+
+          </div>
+        </div>
+
+        <div style="text-align:right;">
+          <div style="
+            width:clamp(80px,14vw,150px);
+            height:clamp(80px,14vw,150px);
+            background:transparent;
+            display:flex;
+            align-items:center;
+            justify-content:center;
+            overflow:hidden;
+          ">
+            <img src="{{ logo_url }}" style="
+              max-width:80%;
+              max-height:80%;
+              object-fit:contain;
+            " />
+          </div>
+
+          <div style="
+            font-size:clamp(10px,1.5vw,16px);
+            opacity:0.8;
+            text-transform:uppercase;
+            margin-top:8px;
+            text-align:center;
+          ">
+            {{ airline_label }}
+          </div>
+
+          {% if mode == 'most' %}
+          <div style="
+            font-size:clamp(9px,1.2vw,12px);
+            opacity:0.6;
+            text-transform:uppercase;
+            margin-top:4px;
+            text-align:center;
+            letter-spacing:0.15em;
+          ">
+            MOST TRACKED FLIGHT
+          </div>
+          {% endif %}
+
+        </div>
+
+      </div>
+    </div>
+
+  {% endif %}
+  </div>
